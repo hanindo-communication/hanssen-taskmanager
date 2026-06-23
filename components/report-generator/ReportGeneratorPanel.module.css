@@ -244,6 +244,79 @@
   transform: translateY(-1px);
 }
 
+.fileLabelSecondary {
+  background: rgb(var(--panel-rgb) / 0.85);
+  border-style: dashed;
+  border-color: rgb(var(--brand-rgb) / 0.38);
+  color: var(--text-secondary);
+}
+
+.fileLabelSecondary:hover {
+  background: rgb(var(--panel-rgb) / 0.98);
+  border-style: dashed;
+  border-color: rgb(var(--brand-rgb) / 0.5);
+}
+
+.uploadedFileList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 10px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.uploadedFileChip {
+  max-width: 280px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  border: 1px solid rgb(var(--brand-rgb) / 0.18);
+  background: rgb(var(--brand-rgb) / 0.08);
+  font-size: 0.78rem;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.growthCard {
+  min-height: 100%;
+}
+
+.growthBarRow {
+  margin-bottom: 12px;
+}
+
+.growthBarRow:last-of-type {
+  margin-bottom: 8px;
+}
+
+.growthDeltaBadge {
+  margin: 12px 0 0;
+  font-size: 1.05rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.growthDeltaSub {
+  font-size: 0.78rem;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+.growthTransitionList {
+  margin: 10px 0 0;
+  padding-left: 1.1rem;
+  font-size: 0.76rem;
+  line-height: 1.5;
+  color: var(--text-soft);
+}
+
+.growthTransitionList li {
+  margin-bottom: 2px;
+}
+
 .fileName {
   font-size: 0.85rem;
   color: var(--text-soft);
@@ -541,6 +614,164 @@
   font-size: 0.88rem;
   color: var(--text-soft);
   font-style: italic;
+}
+
+.bulkActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.printBtnSecondary {
+  background: rgb(var(--panel-rgb) / 0.98) !important;
+  color: var(--text-secondary) !important;
+  border: 1px solid rgb(var(--brand-rgb) / 0.32) !important;
+  box-shadow: none !important;
+}
+
+.printBtnSecondary:hover {
+  background: #fff !important;
+  box-shadow: 0 6px 18px rgba(30, 58, 90, 0.12) !important;
+}
+
+.warningList {
+  margin: 12px 0 0;
+  padding-left: 1.2rem;
+  color: var(--text-secondary);
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+.warningList li {
+  margin-bottom: 4px;
+}
+
+.excludedBanner {
+  padding: 12px 16px;
+  border-radius: 14px;
+  border: 1px solid rgb(234 179 8 / 0.35);
+  background: rgb(234 179 8 / 0.1);
+  color: var(--text-secondary);
+  font-size: 0.88rem;
+  line-height: 1.45;
+}
+
+.weekHeroSection {
+  background: linear-gradient(
+    155deg,
+    rgb(var(--panel-rgb) / 0.96) 0%,
+    rgb(var(--brand-rgb) / 0.09) 42%,
+    rgb(var(--panel-rgb) / 0.9) 100%
+  );
+}
+
+.weekHeroMetrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+@media (max-width: 720px) {
+  .weekHeroMetrics {
+    grid-template-columns: 1fr;
+  }
+}
+
+.weekTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.weekTab,
+.weekTabActive {
+  padding: 10px 16px;
+  border-radius: 999px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+
+.weekTab {
+  border: 1px solid rgb(var(--brand-rgb) / 0.2);
+  background: rgb(var(--panel-rgb) / 0.7);
+  color: var(--text-secondary);
+}
+
+.weekTab:hover {
+  border-color: rgb(var(--brand-rgb) / 0.35);
+  background: rgb(var(--panel-rgb) / 0.95);
+}
+
+.weekTabActive {
+  border: 1px solid rgb(var(--brand-rgb) / 0.4);
+  background: linear-gradient(135deg, var(--brand-strong), var(--brand));
+  color: #fff;
+}
+
+.weekPanelHidden {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 900px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.weekPanelVisible {
+  display: block;
+}
+
+.pdfOnlyBlock {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 900px;
+  opacity: 0;
+  pointer-events: none;
+  z-index: -1;
+}
+
+.wowTable th,
+.wowTable td {
+  white-space: nowrap;
+}
+
+.wowStickyCol {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: rgb(var(--panel-rgb) / 0.98);
+  min-width: 160px;
+  max-width: 220px;
+}
+
+.wowDeltaCol {
+  font-size: 0.8rem;
+  min-width: 56px;
+}
+
+.wowTotalsRow td {
+  border-top: 2px solid rgb(var(--brand-rgb) / 0.2);
+  background: rgb(var(--brand-rgb) / 0.05);
+}
+
+.deltaPositive {
+  color: rgb(34 139 87);
+  font-weight: 700;
+}
+
+.deltaNegative {
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.deltaNeutral {
+  color: var(--text-soft);
 }
 
 @media print {

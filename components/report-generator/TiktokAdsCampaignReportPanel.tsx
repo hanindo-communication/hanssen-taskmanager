@@ -3,10 +3,19 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import boardStyles from '@/components/board/board-client.module.css';
 import {
-  parseTiktokAdsProductCampaignMatrix,
   type TiktokAdsCampaignAggregate,
   type TiktokAdsReportSummary,
 } from '@/lib/report-generator/tiktok-ads-campaign-xlsx';
+import { downloadElementAsPdf, downloadPdfZip } from '@/lib/report-generator/report-pdf';
+import {
+  appendToWeeklyBundle,
+  buildWeeklyBundle,
+  type ParsedFileInput,
+  type TiktokAdsWeekReport,
+  type TiktokAdsWeeklyBundle,
+} from '@/lib/report-generator/tiktok-ads-weekly';
+import { TiktokAdsGrowthInfographic } from './TiktokAdsGrowthInfographic';
+import { TiktokAdsWowTable } from './TiktokAdsWowTable';
 import styles from './ReportGeneratorPanel.module.css';
 
 function formatIdr(n: number): string {
@@ -32,201 +41,333 @@ function normalizeSheetName(n: string): string {
   return n.trim().toLowerCase();
 }
 
-async function downloadElementAsPdf(el: HTMLElement, baseName: string): Promise<void> {
-  const html2canvas = (await import('html2canvas')).default;
-  const { jsPDF } = await import('jspdf');
-  const canvas = await html2canvas(el, {
-    scale: 2,
-    useCORS: true,
-    logging: false,
-    onclone(doc) {
-      doc.querySelectorAll('[data-no-pdf]').forEach((node) => {
-        (node as HTMLElement).style.display = 'none';
-      });
-    },
-  });
-  const imgData = canvas.toDataURL('image/png');
-  const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4' });
-  const imgWidth = pdf.internal.pageSize.getWidth();
-  const pageHeight = pdf.internal.pageSize.getHeight();
-  const imgHeight = (canvas.height * imgWidth) / canvas.width;
-  let heightLeft = imgHeight;
-  let position = 0;
+async function readXlsxMatrix(file: File): Promise<string[][]> {
+  const buf = await file.arrayBuffer();
+  const XLSX = await import('xlsx');
+  const wb = XLSX.read(buf, { type: 'array' });
+  const sheetName = wb.SheetNames.find((n) => normalizeSheetName(n) === 'data') ?? wb.SheetNames[0];
+  if (!sheetName) throw new Error('no-sheet');
+  const sheet = wb.Sheets[sheetName];
+  const raw = XLSX.utils.sheet_to_json(sheet, {
+    header: 1,
+    defval: '',
+    raw: false,
+  }) as unknown[][];
+  return coerceMatrixFromXlsxSheet(raw);
+}
 
-  pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-  heightLeft -= pageHeight;
-
-  while (heightLeft > 0) {
-    position = heightLeft - imgHeight;
-    pdf.addPage();
-    pdf.addImage(imgData, 'PNG', 0, position, imgWidth, imgHeight);
-    heightLeft -= pageHeight;
+async function filesToParsedInputs(
+  files: File[],
+  startOrder: number
+): Promise<ParsedFileInput[]> {
+  const parsed: ParsedFileInput[] = [];
+  let order = startOrder;
+  for (const file of files) {
+    const matrix = await readXlsxMatrix(file);
+    parsed.push({ fileName: file.name, matrix, uploadOrder: order++ });
   }
+  return parsed;
+}
 
-  pdf.save(`${baseName}.pdf`);
+function resetFileInput(input: HTMLInputElement | null): void {
+  if (input) input.value = '';
+}
+
+function activeCampaigns(summary: TiktokAdsReportSummary): TiktokAdsCampaignAggregate[] {
+  return summary.campaigns.filter((c) => c.cost > 0);
+}
+
+function topByRoi(campaigns: TiktokAdsCampaignAggregate[]): TiktokAdsCampaignAggregate[] {
+  const list = [...campaigns].filter((c) => c.roi !== null && c.roi > 0);
+  list.sort((a, b) => (b.roi ?? 0) - (a.roi ?? 0));
+  return list.slice(0, 3);
+}
+
+function topByGmv(campaigns: TiktokAdsCampaignAggregate[]): TiktokAdsCampaignAggregate[] {
+  const list = [...campaigns];
+  list.sort((a, b) => b.grossRevenue - a.grossRevenue);
+  return list.slice(0, 3);
+}
+
+function topBySpend(campaigns: TiktokAdsCampaignAggregate[]): TiktokAdsCampaignAggregate[] {
+  const list = [...campaigns];
+  list.sort((a, b) => b.cost - a.cost);
+  return list.slice(0, 3);
+}
+
+function tableRowsFrom(campaigns: TiktokAdsCampaignAggregate[]): TiktokAdsCampaignAggregate[] {
+  const list = [...campaigns];
+  list.sort((a, b) => b.cost - a.cost);
+  return list;
+}
+
+function findWeekIndexForFile(weeks: TiktokAdsWeekReport[], fileName: string): number {
+  const idx = weeks.findIndex((w) => w.sourceFiles.includes(fileName));
+  return idx >= 0 ? idx : weeks.length - 1;
 }
 
 export function TiktokAdsCampaignReportPanel() {
-  const reportRootRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
-  const [summary, setSummary] = useState<TiktokAdsReportSummary | null>(null);
-  const [fileName, setFileName] = useState<string | null>(null);
+  const [bundle, setBundle] = useState<TiktokAdsWeeklyBundle | null>(null);
+  const [parsedFiles, setParsedFiles] = useState<ParsedFileInput[]>([]);
+  const [activeWeekIndex, setActiveWeekIndex] = useState(0);
   const [pdfBusy, setPdfBusy] = useState(false);
+  const [uploadOrderCounter, setUploadOrderCounter] = useState(0);
 
-  const applyMatrix = useCallback((matrix: string[][], name: string | null) => {
-    setError(null);
-    const { summary: next, error: parseError } = parseTiktokAdsProductCampaignMatrix(matrix);
-    if (parseError || !next) {
-      setSummary(null);
-      setError(parseError ?? 'Gagal memproses data.');
-      setFileName(name);
-      return;
+  const initialInputRef = useRef<HTMLInputElement>(null);
+  const addInputRef = useRef<HTMLInputElement>(null);
+  const weekPdfRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const growthPdfRef = useRef<HTMLDivElement>(null);
+  const wowPdfRef = useRef<HTMLDivElement>(null);
+
+  const weeks = bundle?.weeks ?? [];
+  const activeWeek = weeks[activeWeekIndex] ?? null;
+  const fileNames = parsedFiles.map((f) => f.fileName);
+
+  const applyBundle = useCallback((next: TiktokAdsWeeklyBundle, files: ParsedFileInput[]) => {
+    setBundle(next);
+    setParsedFiles(files);
+    if (next.weeks.length === 0) {
+      setError(next.warnings[0] ?? 'Tidak ada laporan valid dari file yang diunggah.');
     }
-    setSummary(next);
-    setFileName(name);
   }, []);
 
-  const onFile = useCallback(
-    async (file: File | null) => {
-      if (!file) return;
-      const lower = file.name.toLowerCase();
-      if (!lower.endsWith('.xlsx')) {
+  const onInitialFiles = useCallback(
+    async (fileList: FileList | null) => {
+      if (!fileList?.length) return;
+
+      const files = [...fileList];
+      const invalid = files.filter((f) => !f.name.toLowerCase().endsWith('.xlsx'));
+      if (invalid.length > 0) {
         setError('Gunakan file .xlsx (Product campaign data dari TikTok Ads).');
-        setFileName(file.name);
+        setBundle(null);
+        setParsedFiles([]);
+        resetFileInput(initialInputRef.current);
         return;
       }
+
+      setError(null);
+      weekPdfRefs.current.clear();
+
       try {
-        const buf = await file.arrayBuffer();
-        const XLSX = await import('xlsx');
-        const wb = XLSX.read(buf, { type: 'array' });
-        const sheetName = wb.SheetNames.find((n) => normalizeSheetName(n) === 'data') ?? wb.SheetNames[0];
-        if (!sheetName) {
-          setError('File Excel tidak berisi sheet.');
-          setFileName(file.name);
-          return;
-        }
-        const sheet = wb.Sheets[sheetName];
-        const raw = XLSX.utils.sheet_to_json(sheet, {
-          header: 1,
-          defval: '',
-          raw: false,
-        }) as unknown[][];
-        const matrix = coerceMatrixFromXlsxSheet(raw);
-        applyMatrix(matrix, file.name);
+        const parsed = await filesToParsedInputs(files, 0);
+        const next = buildWeeklyBundle(parsed);
+        applyBundle(next, parsed);
+        setUploadOrderCounter(parsed.length);
+        setActiveWeekIndex(0);
+        resetFileInput(initialInputRef.current);
       } catch {
         setError('Gagal membaca file Excel.');
-        setFileName(file.name);
+        setBundle(null);
+        setParsedFiles([]);
+        resetFileInput(initialInputRef.current);
       }
     },
-    [applyMatrix]
+    [applyBundle]
   );
 
-  const activeCampaigns = useMemo(() => {
-    if (!summary) return [];
-    return summary.campaigns.filter((c) => c.cost > 0);
-  }, [summary]);
+  const onAddFiles = useCallback(
+    async (fileList: FileList | null) => {
+      if (!fileList?.length || parsedFiles.length === 0) return;
 
-  const topRoi = useMemo(() => {
-    const list = [...activeCampaigns].filter((c) => c.roi !== null && c.roi > 0);
-    list.sort((a, b) => (b.roi ?? 0) - (a.roi ?? 0));
-    return list.slice(0, 3);
-  }, [activeCampaigns]);
+      const files = [...fileList];
+      const invalid = files.filter((f) => !f.name.toLowerCase().endsWith('.xlsx'));
+      if (invalid.length > 0) {
+        setError('Gunakan file .xlsx (Product campaign data dari TikTok Ads).');
+        resetFileInput(addInputRef.current);
+        return;
+      }
 
-  const topGmv = useMemo(() => {
-    const list = [...activeCampaigns];
-    list.sort((a, b) => b.grossRevenue - a.grossRevenue);
-    return list.slice(0, 3);
-  }, [activeCampaigns]);
+      setError(null);
 
-  const topSpend = useMemo(() => {
-    const list = [...activeCampaigns];
-    list.sort((a, b) => b.cost - a.cost);
-    return list.slice(0, 3);
-  }, [activeCampaigns]);
+      try {
+        const incoming = await filesToParsedInputs(files, uploadOrderCounter);
+        const { bundle: next, parsedFiles: merged, addedFileNames } = appendToWeeklyBundle(
+          parsedFiles,
+          incoming
+        );
 
-  const handleDownloadPdf = useCallback(async () => {
-    const el = reportRootRef.current;
+        applyBundle(next, merged);
+        setUploadOrderCounter((c) => c + incoming.length);
+
+        if (addedFileNames.length > 0 && next.weeks.length > 0) {
+          const lastAdded = addedFileNames[addedFileNames.length - 1];
+          setActiveWeekIndex(findWeekIndexForFile(next.weeks, lastAdded));
+        }
+
+        resetFileInput(addInputRef.current);
+      } catch {
+        setError('Gagal membaca file Excel tambahan.');
+        resetFileInput(addInputRef.current);
+      }
+    },
+    [applyBundle, parsedFiles, uploadOrderCounter]
+  );
+
+  const handleDownloadActiveWeekPdf = useCallback(async () => {
+    if (!activeWeek) return;
+    const el = weekPdfRefs.current.get(activeWeek.weekIndex);
     if (!el) return;
     setPdfBusy(true);
     setError(null);
     try {
-      const stamp = new Date().toISOString().slice(0, 10);
-      await downloadElementAsPdf(el, `laporan-tiktok-ads-${stamp}`);
+      await downloadElementAsPdf(
+        el,
+        `laporan-gmv-max-tiktok-laporan-${activeWeek.weekIndex}_${activeWeek.startDate}_${activeWeek.endDate}`
+      );
     } catch {
       setError('Gagal membuat PDF. Coba lagi.');
     } finally {
       setPdfBusy(false);
     }
-  }, []);
+  }, [activeWeek]);
 
-  const tableRows = useMemo(() => {
-    const list = [...activeCampaigns];
-    list.sort((a, b) => b.cost - a.cost);
-    return list;
-  }, [activeCampaigns]);
+  const handleDownloadAllPdf = useCallback(async () => {
+    if (weeks.length === 0) return;
+    setPdfBusy(true);
+    setError(null);
+    try {
+      const entries: Array<{ element: HTMLElement; fileName: string }> = [];
+
+      for (const week of weeks) {
+        const el = weekPdfRefs.current.get(week.weekIndex);
+        if (el) {
+          entries.push({
+            element: el,
+            fileName: `laporan-gmv-max-tiktok-laporan-${week.weekIndex}_${week.startDate}_${week.endDate}.pdf`,
+          });
+        }
+      }
+
+      if (weeks.length >= 2) {
+        const first = weeks[0];
+        const last = weeks[weeks.length - 1];
+        if (growthPdfRef.current) {
+          entries.push({
+            element: growthPdfRef.current,
+            fileName: `laporan-gmv-max-tiktok-growth_${first.startDate}_${last.endDate}.pdf`,
+          });
+        }
+        if (wowPdfRef.current) {
+          entries.push({
+            element: wowPdfRef.current,
+            fileName: `laporan-gmv-max-tiktok-wow_${first.startDate}_${last.endDate}.pdf`,
+          });
+        }
+      }
+
+      const stamp = new Date().toISOString().slice(0, 10);
+      await downloadPdfZip(entries, `laporan-gmv-max-tiktok-bulk-${stamp}`);
+    } catch {
+      setError('Gagal membuat ZIP PDF. Coba lagi.');
+    } finally {
+      setPdfBusy(false);
+    }
+  }, [weeks]);
+
+  const activeCampaignList = useMemo(
+    () => (activeWeek ? activeCampaigns(activeWeek.summary) : []),
+    [activeWeek]
+  );
 
   return (
-    <div
-      ref={reportRootRef}
-      id={summary ? 'tiktok-ads-report-print' : undefined}
-      className={summary ? styles.printRoot : undefined}
-      data-report-ui="tiktok-ads-campaign-v2"
-    >
+    <div className={weeks.length ? styles.printRoot : undefined} data-report-ui="tiktok-ads-gmv-max">
       <section
         className={`${boardStyles.overviewHero} ${styles.reportHero} ${styles.reportHeroTiktok}`}
       >
         <div className={styles.heroTextCol}>
           <p className={boardStyles.heroEyebrow}>Report Generator</p>
-          <h2 className={boardStyles.heroTitle}>Laporan TikTok Ads</h2>
+          <h2 className={boardStyles.heroTitle}>Laporan GMV MAX TikTok</h2>
           <p className={`${boardStyles.heroDescription} ${styles.heroDescriptionTight}`}>
-            Unggah <strong>XLSX Product campaign data</strong> dari TikTok Ads. Ringkasan per{' '}
-            <strong>nama kampanye</strong>: <strong>Cost (spending)</strong>,{' '}
-            <strong>Current budget</strong> (cap harian), <strong>Gross revenue (GMV)</strong>, dan{' '}
-            <strong>ROI</strong> campuran (GMV ÷ Cost).
+            Unggah <strong>XLSX Product campaign data</strong> — range periode dibaca dari{' '}
+            <strong>nama file</strong> (<code>YYYY-MM-DD - YYYY-MM-DD</code>). Mingguan, bulanan,
+            atau quarter semua bisa. Setelah laporan pertama, pakai{' '}
+            <strong>Pilih File tambahan</strong> untuk periode berikutnya dan lihat infografik
+            growth antar laporan.
           </p>
-          <div className={`${styles.uploadRow} ${summary ? styles.noPrint : ''}`} data-no-pdf>
+          <div className={styles.uploadRow} data-no-pdf>
             <label className={styles.fileLabel}>
               <input
+                ref={initialInputRef}
                 type="file"
+                multiple
                 accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 className={styles.fileInput}
-                onChange={(e) => void onFile(e.target.files?.[0] ?? null)}
+                onChange={(e) => void onInitialFiles(e.target.files)}
               />
-              Pilih file XLSX
+              Pilih file XLSX (bulk)
             </label>
-            {fileName ? <span className={styles.fileName}>{fileName}</span> : null}
-            {summary ? (
-              <button
-                type="button"
-                className={styles.printBtn}
-                data-no-pdf
-                disabled={pdfBusy}
-                onClick={() => void handleDownloadPdf()}
-              >
-                {pdfBusy ? 'Menyusun PDF…' : 'Unduh PDF'}
-              </button>
+            {weeks.length > 0 ? (
+              <label className={`${styles.fileLabel} ${styles.fileLabelSecondary}`}>
+                <input
+                  ref={addInputRef}
+                  type="file"
+                  multiple
+                  accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                  className={styles.fileInput}
+                  onChange={(e) => void onAddFiles(e.target.files)}
+                />
+                Pilih File tambahan
+              </label>
+            ) : null}
+            {weeks.length > 0 ? (
+              <div className={styles.bulkActions}>
+                <button
+                  type="button"
+                  className={styles.printBtn}
+                  disabled={pdfBusy || !activeWeek}
+                  onClick={() => void handleDownloadActiveWeekPdf()}
+                >
+                  {pdfBusy ? 'Menyusun PDF…' : 'Unduh PDF laporan ini'}
+                </button>
+                <button
+                  type="button"
+                  className={`${styles.printBtn} ${styles.printBtnSecondary}`}
+                  disabled={pdfBusy}
+                  onClick={() => void handleDownloadAllPdf()}
+                >
+                  {pdfBusy ? 'Menyusun ZIP…' : 'Unduh semua PDF (ZIP)'}
+                </button>
+              </div>
             ) : null}
           </div>
+          {fileNames.length > 0 ? (
+            <ul className={styles.uploadedFileList} data-no-pdf>
+              {fileNames.map((name) => (
+                <li key={name} className={styles.uploadedFileChip} title={name}>
+                  {name}
+                </li>
+              ))}
+            </ul>
+          ) : null}
           {error ? <p className={styles.error}>{error}</p> : null}
+          {bundle?.warnings?.length ? (
+            <ul className={styles.warningList} data-no-pdf>
+              {bundle.warnings.map((w) => (
+                <li key={w}>{w}</li>
+              ))}
+            </ul>
+          ) : null}
         </div>
-        {summary ? (
+        {activeWeek ? (
           <div className={`${boardStyles.heroStatsGrid} ${styles.heroMetrics}`}>
             <div className={`${boardStyles.metricCard} ${styles.metricCardLift}`}>
               <p className={boardStyles.metricLabel}>Total Cost (spending)</p>
-              <p className={boardStyles.metricValue}>Rp {formatIdr(summary.totalCost)}</p>
+              <p className={boardStyles.metricValue}>Rp {formatIdr(activeWeek.summary.totalCost)}</p>
               <p className={styles.metricSub}>
-                Σ Cost periode · {activeCampaigns.length} kampanye ber-spend · {summary.campaignCount}{' '}
-                nama di file
+                {activeWeek.label} · {activeCampaignList.length} kampanye ber-spend
               </p>
             </div>
             <div className={`${boardStyles.metricCard} ${styles.metricCardLift}`}>
               <p className={boardStyles.metricLabel}>Total GMV</p>
-              <p className={boardStyles.metricValue}>Rp {formatIdr(summary.totalGrossRevenue)}</p>
+              <p className={boardStyles.metricValue}>
+                Rp {formatIdr(activeWeek.summary.totalGrossRevenue)}
+              </p>
               <p className={styles.metricSub}>Σ Gross revenue (kolom TikTok)</p>
             </div>
             <div className={`${boardStyles.metricCard} ${styles.metricCardLift}`}>
               <p className={boardStyles.metricLabel}>ROI campuran</p>
-              <p className={boardStyles.metricValue}>{formatRoi(summary.blendedRoi)}</p>
+              <p className={boardStyles.metricValue}>{formatRoi(activeWeek.summary.blendedRoi)}</p>
               <p className={styles.metricSub}>Total GMV ÷ total Cost</p>
             </div>
           </div>
@@ -248,71 +389,179 @@ export function TiktokAdsCampaignReportPanel() {
         )}
       </section>
 
-      {summary ? (
-        <div className={styles.reportBody}>
-          <section className={styles.section}>
-            <h3 className={styles.sectionTitle}>Ringkasan</h3>
-            <p className={styles.meta}>
-              {summary.rowCount} baris sumber · {summary.campaignCount} nama kampanye ·{' '}
-              {activeCampaigns.length} dengan Cost &gt; 0 · Cost per order{' '}
-              {summary.blendedCostPerOrder !== null
-                ? `Rp ${formatIdr(summary.blendedCostPerOrder)}`
-                : '—'}{' '}
-              · Σ daily budget cap Rp {formatIdr(summary.sumOfDailyBudgetCaps)}
-            </p>
-            <p className={styles.infographicFootnote} style={{ marginTop: 10 }}>
-              Tabel dan Top 3 hanya memakai kampanye yang punya spending (Cost &gt; 0). Net Cost
-              setelah insentif di tabel. Current budget = cap harian per kampanye; Σ daily budget
-              cap menjumlahkan cap antarkampanye, bukan anggaran akun.
-            </p>
-          </section>
+      {weeks.length > 0 ? (
+        <>
+          <div className={styles.weekTabs} data-no-pdf>
+            {weeks.map((w, i) => (
+              <button
+                key={w.sourceFiles[0] ?? w.weekIndex}
+                type="button"
+                className={i === activeWeekIndex ? styles.weekTabActive : styles.weekTab}
+                onClick={() => setActiveWeekIndex(i)}
+              >
+                {w.label}
+              </button>
+            ))}
+          </div>
 
-          <section className={styles.section}>
-            <h3 className={styles.sectionTitle}>Top 3 — infografik</h3>
-            <p className={styles.sectionHint}>
-              Hanya kampanye dengan Cost &gt; 0. Panjang batang relatif terhadap #1 di masing-masing
-              kartu.
-            </p>
-            <div className={styles.threeColRankGrid}>
-              <TopThreeCard
-                title="Top 3 ROI"
-                hint="Gross revenue ÷ Cost"
-                entries={topRoi}
-                maxValue={topRoi[0]?.roi ?? 1}
-                formatValue={(c) => formatRoi(c.roi)}
-                barClass={styles.barFillRoi}
-                pctForRow={(c, max) => (max > 0 && c.roi !== null ? (c.roi / max) * 100 : 0)}
-              />
-              <TopThreeCard
-                title="Top 3 GMV"
-                hint="Gross revenue"
-                entries={topGmv}
-                maxValue={topGmv[0]?.grossRevenue ?? 1}
-                formatValue={(c) => `Rp ${formatIdr(c.grossRevenue)}`}
-                barClass={styles.barFillGmv}
-                pctForRow={(c, max) => (max > 0 ? (c.grossRevenue / max) * 100 : 0)}
-              />
-              <TopThreeCard
-                title="Top 3 spending"
-                hint="Cost"
-                entries={topSpend}
-                maxValue={topSpend[0]?.cost ?? 1}
-                formatValue={(c) => `Rp ${formatIdr(c.cost)}`}
-                barClass={styles.barFillSpend}
-                pctForRow={(c, max) => (max > 0 ? (c.cost / max) * 100 : 0)}
-              />
-            </div>
-          </section>
+          {weeks.map((week) => (
+            <WeeklyReportSection
+              key={week.sourceFiles[0] ?? week.weekIndex}
+              week={week}
+              hidden={week.weekIndex !== activeWeek?.weekIndex}
+              pdfRef={(el) => {
+                if (el) weekPdfRefs.current.set(week.weekIndex, el);
+                else weekPdfRefs.current.delete(week.weekIndex);
+              }}
+            />
+          ))}
 
-          <section className={styles.section}>
-            <h3 className={styles.sectionTitle}>Per kampanye</h3>
-            <p className={styles.sectionHint}>
-              Hanya Cost &gt; 0; urut Cost tertinggi. ROI per baris = Gross revenue ÷ Cost.
-            </p>
-            <CampaignTable rows={tableRows} />
-          </section>
-        </div>
+          {weeks.length >= 2 ? (
+            <>
+              <section className={styles.section}>
+                <h3 className={styles.sectionTitle}>Growth antar laporan</h3>
+                <p className={styles.sectionHint}>
+                  Perbandingan total Cost, GMV, dan ROI campuran antar periode. Δ% = perubahan vs
+                  laporan sebelumnya.
+                </p>
+                <div data-no-pdf>
+                  <TiktokAdsGrowthInfographic weeks={weeks} />
+                </div>
+                <div ref={growthPdfRef} className={styles.pdfOnlyBlock} aria-hidden>
+                  <h3 className={styles.sectionTitle}>Growth antar laporan</h3>
+                  <p className={styles.sectionHint}>
+                    {weeks[0]?.startDate} – {weeks[weeks.length - 1]?.endDate}
+                  </p>
+                  <TiktokAdsGrowthInfographic weeks={weeks} />
+                </div>
+              </section>
+
+              <section className={styles.section}>
+                <h3 className={styles.sectionTitle}>Perbandingan antar laporan</h3>
+                <p className={styles.sectionHint}>
+                  Cost, GMV, dan ROI per kampanye antar file yang diunggah. Δ% = perubahan vs
+                  laporan sebelumnya. Cost turun = hijau; GMV/ROI naik = hijau.
+                </p>
+                <div data-no-pdf>
+                  <TiktokAdsWowTable weeks={weeks} />
+                </div>
+                <div ref={wowPdfRef} className={styles.pdfOnlyBlock} aria-hidden>
+                  <h3 className={styles.sectionTitle}>Perbandingan antar laporan</h3>
+                  <p className={styles.sectionHint}>
+                    {weeks[0]?.startDate} – {weeks[weeks.length - 1]?.endDate}
+                  </p>
+                  <TiktokAdsWowTable weeks={weeks} />
+                </div>
+              </section>
+            </>
+          ) : null}
+        </>
       ) : null}
+    </div>
+  );
+}
+
+function WeeklyReportSection({
+  week,
+  hidden,
+  pdfRef,
+}: {
+  week: TiktokAdsWeekReport;
+  hidden: boolean;
+  pdfRef: (el: HTMLDivElement | null) => void;
+}) {
+  const campaigns = useMemo(() => activeCampaigns(week.summary), [week.summary]);
+  const topRoi = useMemo(() => topByRoi(campaigns), [campaigns]);
+  const topGmv = useMemo(() => topByGmv(campaigns), [campaigns]);
+  const topSpend = useMemo(() => topBySpend(campaigns), [campaigns]);
+  const tableRows = useMemo(() => tableRowsFrom(campaigns), [campaigns]);
+
+  return (
+    <div
+      ref={pdfRef}
+      className={hidden ? styles.weekPanelHidden : styles.weekPanelVisible}
+      data-week-panel={week.weekIndex}
+    >
+      <div className={styles.reportBody}>
+        <section className={`${styles.section} ${styles.weekHeroSection}`}>
+          <p className={boardStyles.heroEyebrow}>Laporan GMV MAX TikTok</p>
+          <h3 className={styles.sectionTitle}>{week.label}</h3>
+          <div className={styles.weekHeroMetrics}>
+            <div className={styles.infoTile}>
+              <p className={styles.infoTileLabel}>Total Cost</p>
+              <p className={styles.infoTileValue}>Rp {formatIdr(week.summary.totalCost)}</p>
+            </div>
+            <div className={styles.infoTile}>
+              <p className={styles.infoTileLabel}>Total GMV</p>
+              <p className={styles.infoTileValue}>Rp {formatIdr(week.summary.totalGrossRevenue)}</p>
+            </div>
+            <div className={styles.infoTile}>
+              <p className={styles.infoTileLabel}>ROI campuran</p>
+              <p className={styles.infoTileValue}>{formatRoi(week.summary.blendedRoi)}</p>
+            </div>
+          </div>
+        </section>
+
+        <section className={styles.section}>
+          <h3 className={styles.sectionTitle}>Ringkasan</h3>
+          <p className={styles.meta}>
+            {week.summary.rowCount} baris sumber · {week.summary.campaignCount} nama kampanye ·{' '}
+            {campaigns.length} dengan Cost &gt; 0 · Cost per order{' '}
+            {week.summary.blendedCostPerOrder !== null
+              ? `Rp ${formatIdr(week.summary.blendedCostPerOrder)}`
+              : '—'}{' '}
+            · Σ daily budget cap Rp {formatIdr(week.summary.sumOfDailyBudgetCaps)}
+            {week.sourceFiles.length > 0 ? (
+              <> · Sumber: {week.sourceFiles.join(', ')}</>
+            ) : null}
+          </p>
+        </section>
+
+        <section className={styles.section}>
+          <h3 className={styles.sectionTitle}>Top 3 — infografik</h3>
+          <p className={styles.sectionHint}>
+            Hanya kampanye dengan Cost &gt; 0. Panjang batang relatif terhadap #1 di masing-masing
+            kartu.
+          </p>
+          <div className={styles.threeColRankGrid}>
+            <TopThreeCard
+              title="Top 3 ROI"
+              hint="Gross revenue ÷ Cost"
+              entries={topRoi}
+              maxValue={topRoi[0]?.roi ?? 1}
+              formatValue={(c) => formatRoi(c.roi)}
+              barClass={styles.barFillRoi}
+              pctForRow={(c, max) => (max > 0 && c.roi !== null ? (c.roi / max) * 100 : 0)}
+            />
+            <TopThreeCard
+              title="Top 3 GMV"
+              hint="Gross revenue"
+              entries={topGmv}
+              maxValue={topGmv[0]?.grossRevenue ?? 1}
+              formatValue={(c) => `Rp ${formatIdr(c.grossRevenue)}`}
+              barClass={styles.barFillGmv}
+              pctForRow={(c, max) => (max > 0 ? (c.grossRevenue / max) * 100 : 0)}
+            />
+            <TopThreeCard
+              title="Top 3 spending"
+              hint="Cost"
+              entries={topSpend}
+              maxValue={topSpend[0]?.cost ?? 1}
+              formatValue={(c) => `Rp ${formatIdr(c.cost)}`}
+              barClass={styles.barFillSpend}
+              pctForRow={(c, max) => (max > 0 ? (c.cost / max) * 100 : 0)}
+            />
+          </div>
+        </section>
+
+        <section className={styles.section}>
+          <h3 className={styles.sectionTitle}>Per kampanye</h3>
+          <p className={styles.sectionHint}>
+            Hanya Cost &gt; 0; urut Cost tertinggi. ROI per baris = Gross revenue ÷ Cost.
+          </p>
+          <CampaignTable rows={tableRows} />
+        </section>
+      </div>
     </div>
   );
 }
