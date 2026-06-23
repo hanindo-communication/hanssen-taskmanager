@@ -10,10 +10,12 @@ import { downloadElementAsPdf, downloadPdfZip } from '@/lib/report-generator/rep
 import {
   appendToWeeklyBundle,
   buildWeeklyBundle,
+  buildCombinedSelectionSummary,
   type ParsedFileInput,
   type TiktokAdsWeekReport,
   type TiktokAdsWeeklyBundle,
 } from '@/lib/report-generator/tiktok-ads-weekly';
+import { TiktokAdsCombinedView } from './TiktokAdsCombinedView';
 import { TiktokAdsGrowthInfographic } from './TiktokAdsGrowthInfographic';
 import { TiktokAdsWowTable } from './TiktokAdsWowTable';
 import styles from './ReportGeneratorPanel.module.css';
@@ -106,11 +108,23 @@ function findWeekIndexForFile(weeks: TiktokAdsWeekReport[], fileName: string): n
   return idx >= 0 ? idx : weeks.length - 1;
 }
 
+function weekKey(week: TiktokAdsWeekReport): string {
+  return week.sourceFiles[0] ?? `${week.weekIndex}`;
+}
+
+function formatFileLabel(label: string): string {
+  return label.replace(/^Laporan \d+ · /, '');
+}
+
 export function TiktokAdsCampaignReportPanel() {
   const [error, setError] = useState<string | null>(null);
   const [bundle, setBundle] = useState<TiktokAdsWeeklyBundle | null>(null);
   const [parsedFiles, setParsedFiles] = useState<ParsedFileInput[]>([]);
   const [activeWeekIndex, setActiveWeekIndex] = useState(0);
+  const [viewMode, setViewMode] = useState<'single' | 'combined'>('single');
+  const [combinedModalOpen, setCombinedModalOpen] = useState(false);
+  const [combinedSelection, setCombinedSelection] = useState<string[]>([]);
+  const [combinedDraftSelection, setCombinedDraftSelection] = useState<string[]>([]);
   const [pdfBusy, setPdfBusy] = useState(false);
   const [uploadOrderCounter, setUploadOrderCounter] = useState(0);
 
@@ -123,6 +137,29 @@ export function TiktokAdsCampaignReportPanel() {
   const weeks = bundle?.weeks ?? [];
   const activeWeek = weeks[activeWeekIndex] ?? null;
   const fileNames = parsedFiles.map((f) => f.fileName);
+  const availableWeekKeys = weeks.map(weekKey);
+  const selectedCombinedWeeks = useMemo(() => {
+    const keys = combinedSelection.length > 0 ? combinedSelection : availableWeekKeys;
+    const keySet = new Set(keys);
+    return weeks.filter((w) => keySet.has(weekKey(w)));
+  }, [availableWeekKeys, combinedSelection, weeks]);
+  const combinedSummary = useMemo(() => {
+    if (selectedCombinedWeeks.length === 0) return null;
+    return buildCombinedSelectionSummary(selectedCombinedWeeks);
+  }, [selectedCombinedWeeks]);
+  const combinedHero = useMemo(() => {
+    if (!combinedSummary) return null;
+    const totalCost = combinedSummary.totals.reduce((sum, t) => sum + t.cost, 0);
+    const totalGrossRevenue = combinedSummary.totals.reduce((sum, t) => sum + t.grossRevenue, 0);
+    const blendedRoi = totalCost > 0 ? totalGrossRevenue / totalCost : null;
+    return {
+      title: `${selectedCombinedWeeks.length} laporan dipilih`,
+      totalCost,
+      totalGrossRevenue,
+      blendedRoi,
+      campaignCount: combinedSummary.campaigns.length,
+    };
+  }, [combinedSummary, selectedCombinedWeeks.length]);
 
   const applyBundle = useCallback((next: TiktokAdsWeeklyBundle, files: ParsedFileInput[]) => {
     setBundle(next);
@@ -155,6 +192,10 @@ export function TiktokAdsCampaignReportPanel() {
         applyBundle(next, parsed);
         setUploadOrderCounter(parsed.length);
         setActiveWeekIndex(0);
+        setViewMode('single');
+        setCombinedSelection([]);
+        setCombinedDraftSelection([]);
+        setCombinedModalOpen(false);
         resetFileInput(initialInputRef.current);
       } catch {
         setError('Gagal membaca file Excel.');
@@ -270,6 +311,30 @@ export function TiktokAdsCampaignReportPanel() {
     [activeWeek]
   );
 
+  const openCombinedModal = useCallback(() => {
+    const defaults = combinedSelection.length > 0 ? combinedSelection : availableWeekKeys;
+    setCombinedDraftSelection(defaults);
+    setCombinedModalOpen(true);
+  }, [availableWeekKeys, combinedSelection]);
+
+  const closeCombinedModal = useCallback(() => {
+    setCombinedModalOpen(false);
+  }, []);
+
+  const confirmCombinedModal = useCallback(() => {
+    const next = availableWeekKeys.filter((key) => combinedDraftSelection.includes(key));
+    if (next.length === 0) return;
+    setCombinedSelection(next);
+    setViewMode('combined');
+    setCombinedModalOpen(false);
+  }, [availableWeekKeys, combinedDraftSelection]);
+
+  const toggleDraftSelection = useCallback((key: string) => {
+    setCombinedDraftSelection((current) =>
+      current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
+    );
+  }, []);
+
   return (
     <div className={weeks.length ? styles.printRoot : undefined} data-report-ui="tiktok-ads-gmv-max">
       <section
@@ -311,6 +376,15 @@ export function TiktokAdsCampaignReportPanel() {
               </label>
             ) : null}
             {weeks.length > 0 ? (
+              <button
+                type="button"
+                className={`${styles.printBtn} ${styles.printBtnSecondary}`}
+                onClick={openCombinedModal}
+              >
+                Buat laporan gabungan
+              </button>
+            ) : null}
+            {weeks.length > 0 ? (
               <div className={styles.bulkActions}>
                 <button
                   type="button"
@@ -349,7 +423,27 @@ export function TiktokAdsCampaignReportPanel() {
             </ul>
           ) : null}
         </div>
-        {activeWeek ? (
+        {viewMode === 'combined' && combinedHero ? (
+          <div className={`${boardStyles.heroStatsGrid} ${styles.heroMetrics}`}>
+            <div className={`${boardStyles.metricCard} ${styles.metricCardLift}`}>
+              <p className={boardStyles.metricLabel}>Total Cost (gabungan)</p>
+              <p className={boardStyles.metricValue}>Rp {formatIdr(combinedHero.totalCost)}</p>
+              <p className={styles.metricSub}>
+                {combinedHero.title} · {combinedHero.campaignCount} kampanye unik
+              </p>
+            </div>
+            <div className={`${boardStyles.metricCard} ${styles.metricCardLift}`}>
+              <p className={boardStyles.metricLabel}>Total GMV (gabungan)</p>
+              <p className={boardStyles.metricValue}>Rp {formatIdr(combinedHero.totalGrossRevenue)}</p>
+              <p className={styles.metricSub}>Σ Gross revenue dari laporan terpilih</p>
+            </div>
+            <div className={`${boardStyles.metricCard} ${styles.metricCardLift}`}>
+              <p className={boardStyles.metricLabel}>ROI campuran (gabungan)</p>
+              <p className={boardStyles.metricValue}>{formatRoi(combinedHero.blendedRoi)}</p>
+              <p className={styles.metricSub}>Total GMV ÷ total Cost</p>
+            </div>
+          </div>
+        ) : activeWeek ? (
           <div className={`${boardStyles.heroStatsGrid} ${styles.heroMetrics}`}>
             <div className={`${boardStyles.metricCard} ${styles.metricCardLift}`}>
               <p className={boardStyles.metricLabel}>Total Cost (spending)</p>
@@ -390,72 +484,149 @@ export function TiktokAdsCampaignReportPanel() {
       </section>
 
       {weeks.length > 0 ? (
-        <>
-          <div className={styles.weekTabs} data-no-pdf>
-            {weeks.map((w, i) => (
-              <button
-                key={w.sourceFiles[0] ?? w.weekIndex}
-                type="button"
-                className={i === activeWeekIndex ? styles.weekTabActive : styles.weekTab}
-                onClick={() => setActiveWeekIndex(i)}
-              >
-                {w.label}
-              </button>
+        viewMode === 'combined' ? (
+          <TiktokAdsCombinedView
+            weeks={selectedCombinedWeeks}
+            onEditSelection={openCombinedModal}
+            onBackToSingle={() => setViewMode('single')}
+          />
+        ) : (
+          <>
+            <div className={styles.weekTabs} data-no-pdf>
+              {weeks.map((w, i) => (
+                <button
+                  key={w.sourceFiles[0] ?? w.weekIndex}
+                  type="button"
+                  className={i === activeWeekIndex ? styles.weekTabActive : styles.weekTab}
+                  onClick={() => setActiveWeekIndex(i)}
+                >
+                  {w.label}
+                </button>
+              ))}
+            </div>
+
+            {weeks.map((week) => (
+              <WeeklyReportSection
+                key={week.sourceFiles[0] ?? week.weekIndex}
+                week={week}
+                hidden={week.weekIndex !== activeWeek?.weekIndex}
+                pdfRef={(el) => {
+                  if (el) weekPdfRefs.current.set(week.weekIndex, el);
+                  else weekPdfRefs.current.delete(week.weekIndex);
+                }}
+              />
             ))}
-          </div>
 
-          {weeks.map((week) => (
-            <WeeklyReportSection
-              key={week.sourceFiles[0] ?? week.weekIndex}
-              week={week}
-              hidden={week.weekIndex !== activeWeek?.weekIndex}
-              pdfRef={(el) => {
-                if (el) weekPdfRefs.current.set(week.weekIndex, el);
-                else weekPdfRefs.current.delete(week.weekIndex);
-              }}
-            />
-          ))}
-
-          {weeks.length >= 2 ? (
-            <>
-              <section className={styles.section}>
-                <h3 className={styles.sectionTitle}>Growth antar laporan</h3>
-                <p className={styles.sectionHint}>
-                  Perbandingan total Cost, GMV, dan ROI campuran antar periode. Δ% = perubahan vs
-                  laporan sebelumnya.
-                </p>
-                <div data-no-pdf>
-                  <TiktokAdsGrowthInfographic weeks={weeks} />
-                </div>
-                <div ref={growthPdfRef} className={styles.pdfOnlyBlock} aria-hidden>
+            {weeks.length >= 2 ? (
+              <>
+                <section className={styles.section}>
                   <h3 className={styles.sectionTitle}>Growth antar laporan</h3>
                   <p className={styles.sectionHint}>
-                    {weeks[0]?.startDate} – {weeks[weeks.length - 1]?.endDate}
+                    Perbandingan total Cost, GMV, dan ROI campuran antar periode. Δ% = perubahan vs
+                    laporan sebelumnya.
                   </p>
-                  <TiktokAdsGrowthInfographic weeks={weeks} />
-                </div>
-              </section>
+                  <div data-no-pdf>
+                    <TiktokAdsGrowthInfographic weeks={weeks} />
+                  </div>
+                  <div ref={growthPdfRef} className={styles.pdfOnlyBlock} aria-hidden>
+                    <h3 className={styles.sectionTitle}>Growth antar laporan</h3>
+                    <p className={styles.sectionHint}>
+                      {weeks[0]?.startDate} – {weeks[weeks.length - 1]?.endDate}
+                    </p>
+                    <TiktokAdsGrowthInfographic weeks={weeks} />
+                  </div>
+                </section>
 
-              <section className={styles.section}>
-                <h3 className={styles.sectionTitle}>Perbandingan antar laporan</h3>
-                <p className={styles.sectionHint}>
-                  Cost, GMV, dan ROI per kampanye antar file yang diunggah. Δ% = perubahan vs
-                  laporan sebelumnya. Cost turun = hijau; GMV/ROI naik = hijau.
-                </p>
-                <div data-no-pdf>
-                  <TiktokAdsWowTable weeks={weeks} />
-                </div>
-                <div ref={wowPdfRef} className={styles.pdfOnlyBlock} aria-hidden>
+                <section className={styles.section}>
                   <h3 className={styles.sectionTitle}>Perbandingan antar laporan</h3>
                   <p className={styles.sectionHint}>
-                    {weeks[0]?.startDate} – {weeks[weeks.length - 1]?.endDate}
+                    Cost, GMV, dan ROI per kampanye antar file yang diunggah. Δ% = perubahan vs
+                    laporan sebelumnya. Cost turun = hijau; GMV/ROI naik = hijau.
                   </p>
-                  <TiktokAdsWowTable weeks={weeks} />
-                </div>
-              </section>
-            </>
-          ) : null}
-        </>
+                  <div data-no-pdf>
+                    <TiktokAdsWowTable weeks={weeks} />
+                  </div>
+                  <div ref={wowPdfRef} className={styles.pdfOnlyBlock} aria-hidden>
+                    <h3 className={styles.sectionTitle}>Perbandingan antar laporan</h3>
+                    <p className={styles.sectionHint}>
+                      {weeks[0]?.startDate} – {weeks[weeks.length - 1]?.endDate}
+                    </p>
+                    <TiktokAdsWowTable weeks={weeks} />
+                  </div>
+                </section>
+              </>
+            ) : null}
+          </>
+        )
+      ) : null}
+
+      {combinedModalOpen ? (
+        <div className={styles.modalBackdrop} onClick={closeCombinedModal} role="presentation">
+          <div
+            className={styles.modalCard}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="combined-report-title"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className={styles.modalHeader}>
+              <div>
+                <h3 id="combined-report-title" className={styles.sectionTitle}>
+                  Buat laporan gabungan
+                </h3>
+                <p className={styles.sectionHint}>
+                  Pilih 1 atau lebih laporan untuk dibandingkan dalam view gabungan.
+                </p>
+              </div>
+              <button type="button" className={styles.modalCloseBtn} onClick={closeCombinedModal}>
+                Tutup
+              </button>
+            </div>
+
+            <div className={styles.modalList}>
+              {weeks.map((week) => {
+                const key = weekKey(week);
+                const checked = combinedDraftSelection.includes(key);
+                return (
+                  <label key={key} className={styles.modalOption}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleDraftSelection(key)}
+                    />
+                    <span>
+                      <strong>{week.label}</strong>
+                      <small>{formatFileLabel(week.label)}</small>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+
+            <div className={styles.modalFooter}>
+              <span className={styles.modalMeta}>
+                {combinedDraftSelection.length} laporan dipilih
+              </span>
+              <div className={styles.bulkActions}>
+                <button
+                  type="button"
+                  className={`${styles.printBtn} ${styles.printBtnSecondary}`}
+                  onClick={closeCombinedModal}
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  className={styles.printBtn}
+                  disabled={combinedDraftSelection.length === 0}
+                  onClick={() => void confirmCombinedModal()}
+                >
+                  Pakai laporan gabungan
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       ) : null}
     </div>
   );

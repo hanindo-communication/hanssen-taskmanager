@@ -35,6 +35,33 @@ export type WowTotalsRow = {
   roi: number | null;
 };
 
+export type CombinedCampaignReportRow = {
+  reportLabel: string;
+  cost: number | null;
+  grossRevenue: number | null;
+  roi: number | null;
+};
+
+export type CombinedCampaignAggregate = {
+  campaignName: string;
+  reports: CombinedCampaignReportRow[];
+  totalCost: number;
+  totalGrossRevenue: number;
+  blendedRoi: number | null;
+  roiTrend: number | null;
+};
+
+export type CombinedSelectionSummary = {
+  reports: TiktokAdsWeekReport[];
+  totals: Array<{
+    reportLabel: string;
+    cost: number;
+    grossRevenue: number;
+    roi: number | null;
+  }>;
+  campaigns: CombinedCampaignAggregate[];
+};
+
 export type ParsedFileInput = {
   fileName: string;
   matrix: string[][];
@@ -90,7 +117,7 @@ function findCampaign(
 }
 
 export function buildWowRows(weeks: TiktokAdsWeekReport[]): {
-  campaigns: WowCampaignRow[];
+  campaigns: WowCampaignRow[]; 
   totals: WowTotalsRow[];
 } {
   const nameSet = new Set<string>();
@@ -120,6 +147,67 @@ export function buildWowRows(weeks: TiktokAdsWeekReport[]): {
   }));
 
   return { campaigns, totals };
+}
+
+export function buildCombinedSelectionSummary(weeks: TiktokAdsWeekReport[]): CombinedSelectionSummary {
+  const totals = weeks.map((w) => ({
+    reportLabel: w.label,
+    cost: w.summary.totalCost,
+    grossRevenue: w.summary.totalGrossRevenue,
+    roi: w.summary.blendedRoi,
+  }));
+
+  const nameSet = new Set<string>();
+  for (const w of weeks) {
+    for (const c of w.summary.campaigns) {
+      if (c.cost > 0) nameSet.add(c.campaignName);
+    }
+  }
+
+  const campaigns = [...nameSet]
+    .sort((a, b) => a.localeCompare(b, 'id-ID'))
+    .map<CombinedCampaignAggregate>((campaignName) => {
+      const reports = weeks.map((w) => {
+        const found = findCampaign(w.summary.campaigns, campaignName);
+        if (!found || found.cost <= 0) {
+          return {
+            reportLabel: w.label,
+            cost: null,
+            grossRevenue: null,
+            roi: null,
+          };
+        }
+        return {
+          reportLabel: w.label,
+          cost: found.cost,
+          grossRevenue: found.grossRevenue,
+          roi: found.roi,
+        };
+      });
+
+      const totalCost = reports.reduce((sum, r) => sum + (r.cost ?? 0), 0);
+      const totalGrossRevenue = reports.reduce((sum, r) => sum + (r.grossRevenue ?? 0), 0);
+      const blendedRoi = totalCost > 0 ? totalGrossRevenue / totalCost : null;
+
+      const roiSeries = reports
+        .map((r) => r.roi)
+        .filter((v): v is number => v !== null && Number.isFinite(v));
+      const roiTrend =
+        roiSeries.length >= 2
+          ? calcDeltaPct(roiSeries[roiSeries.length - 1], roiSeries[0])
+          : null;
+
+      return {
+        campaignName,
+        reports,
+        totalCost,
+        totalGrossRevenue,
+        blendedRoi,
+        roiTrend,
+      };
+    });
+
+  return { reports: weeks, totals, campaigns };
 }
 
 export function calcDeltaPct(current: number | null, previous: number | null): number | null {
