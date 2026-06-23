@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import {
   buildWowRows,
   calcDeltaPct,
@@ -48,8 +48,16 @@ type Props = {
 
 export function TiktokAdsWowTable({ weeks }: Props) {
   const { campaigns, totals } = useMemo(() => buildWowRows(weeks), [weeks]);
+  const [expandedCampaigns, setExpandedCampaigns] = useState<Record<string, boolean>>({});
 
   if (weeks.length < 2) return null;
+
+  function toggleCampaign(campaignName: string) {
+    setExpandedCampaigns((current) => ({
+      ...current,
+      [campaignName]: !current[campaignName],
+    }));
+  }
 
   return (
     <div className={styles.tableWrap}>
@@ -77,11 +85,38 @@ export function TiktokAdsWowTable({ weeks }: Props) {
           </tr>
         </thead>
         <tbody>
-          {campaigns.map((row) => (
-            <tr key={row.campaignName}>
-              <td className={styles.wowStickyCol}>
-                <span className={styles.adName}>{row.campaignName}</span>
-              </td>
+          {campaigns.map((row) => {
+            const isExpanded = Boolean(expandedCampaigns[row.campaignName]);
+            const showToggle = row.campaignName.length > 30;
+
+            return (
+              <tr key={row.campaignName}>
+                <td className={styles.wowStickyCol}>
+                  <div
+                    className={`${styles.wowCampaignCell} ${
+                      isExpanded ? styles.wowCampaignCellExpanded : ''
+                    }`}
+                  >
+                    <div className={styles.wowCampaignLine}>
+                      <span className={styles.adName} title={row.campaignName}>
+                        {row.campaignName}
+                      </span>
+                      {showToggle ? (
+                        <button
+                          type="button"
+                          className={styles.wowSeeMoreBtn}
+                          onClick={() => toggleCampaign(row.campaignName)}
+                          aria-expanded={isExpanded}
+                        >
+                          {isExpanded ? 'See less' : 'See more'}
+                        </button>
+                      ) : null}
+                    </div>
+                    {isExpanded ? (
+                      <div className={styles.wowCampaignFullName}>{row.campaignName}</div>
+                    ) : null}
+                  </div>
+                </td>
               {METRICS.flatMap((m) =>
                 weeks.flatMap((w, wi) => {
                   const weekData = row.weeks[wi];
@@ -120,8 +155,9 @@ export function TiktokAdsWowTable({ weeks }: Props) {
                   return cols;
                 })
               )}
-            </tr>
-          ))}
+              </tr>
+            );
+          })}
           <tr className={styles.wowTotalsRow}>
             <td className={styles.wowStickyCol}>
               <strong>Total</strong>

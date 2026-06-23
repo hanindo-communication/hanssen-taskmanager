@@ -746,8 +746,73 @@
   left: 0;
   z-index: 1;
   background: rgb(var(--panel-rgb) / 0.98);
-  min-width: 160px;
+  width: 220px;
+  min-width: 220px;
   max-width: 220px;
+  white-space: normal !important;
+  vertical-align: top;
+}
+
+.wowCampaignCell {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.wowCampaignLine {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.wowCampaignLine .adName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.wowCampaignCellExpanded .wowCampaignLine {
+  align-items: flex-start;
+}
+
+.wowCampaignCellExpanded .adName {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-word;
+}
+
+.wowCampaignFullName {
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: var(--text-soft);
+  word-break: break-word;
+}
+
+.wowSeeMoreBtn {
+  flex-shrink: 0;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: var(--brand-strong);
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.wowSeeMoreBtn:hover {
+  text-decoration: underline;
+}
+
+.wowSeeMoreBtn:focus-visible {
+  outline: 2px solid rgb(var(--brand-rgb) / 0.55);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .wowDeltaCol {
