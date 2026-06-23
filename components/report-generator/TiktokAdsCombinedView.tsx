@@ -221,8 +221,8 @@ export function TiktokAdsCombinedView({ weeks, onEditSelection, onBackToSingle }
       if (cancelled || !Plotly) return;
       const plotly = Plotly;
 
-      const theme = readThemeFromEl(summaryRootRef.current);
-      const reportLabels = data.totals.map((t) => shortReportLabel(t.reportLabel));
+      const theme = chartTheme(summaryRootRef.current);
+      const reportLabels = data.totals.map((t) => compactReportLabel(t.reportLabel));
 
       const renderLine = async (
         ref: RefObject<HTMLDivElement>,
@@ -272,7 +272,7 @@ export function TiktokAdsCombinedView({ weeks, onEditSelection, onBackToSingle }
         const traces = data.reports.map((report, reportIndex) => ({
           type: 'bar' as const,
           orientation: 'h' as const,
-          name: shortReportLabel(report.label),
+            name: compactReportLabel(report.label),
           x: rows.map((row) => {
             const reportRow = row.reports[reportIndex];
             return metric === 'cost'
@@ -557,4 +557,22 @@ export function TiktokAdsCombinedView({ weeks, onEditSelection, onBackToSingle }
       </section>
     </div>
   );
+}
+
+function compactReportLabel(label: string): string {
+  return label.replace(/^Laporan \d+ · /, '');
+}
+
+function chartTheme(el: HTMLElement | null): ThemeVars {
+  const s = el ? getComputedStyle(el) : null;
+  return {
+    paper: 'rgba(255, 255, 255, 0.02)',
+    text: '#243b57',
+    grid: 'rgba(84, 120, 155, 0.18)',
+    colors: ['#174f73', '#2c86b3', '#a86b44', '#5d7ea6', '#7f9bb4'],
+    fontFamily:
+      s?.getPropertyValue('--font-body').trim() ||
+      s?.getPropertyValue('font-family').trim() ||
+      'Instrument Sans, sans-serif',
+  };
 }
